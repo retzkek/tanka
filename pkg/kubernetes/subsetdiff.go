@@ -4,7 +4,6 @@ import (
 	"strings"
 
 	"github.com/pkg/errors"
-	yaml "gopkg.in/yaml.v3"
 
 	"github.com/grafana/tanka/pkg/kubernetes/client"
 	"github.com/grafana/tanka/pkg/kubernetes/manifest"
@@ -12,8 +11,9 @@ import (
 )
 
 type difference struct {
-	name         string
-	live, merged string
+	name    string
+	local   string // local (Jsonnet) state
+	cluster string // live state in the cluster
 }
 
 // SubsetDiffer returns a implementation of Differ that computes the diff by
@@ -49,7 +49,7 @@ func SubsetDiffer(c client.Client) Differ {
 
 		var diffs string
 		for _, d := range docs {
-			diffStr, err := util.DiffStr(d.name, d.live, d.merged)
+			diffStr, err := util.DiffStr(d.name, d.local, d.cluster)
 			if err != nil {
 				return nil, errors.Wrap(err, "invoking diff")
 			}
@@ -81,35 +81,29 @@ func subsetDiff(c client.Client, m manifest.Manifest) (*difference, error) {
 	name := util.DiffName(m)
 
 	// kubectl output -> current state
-	rawIs, err := c.Get(
+	res, err := c.Get(
 		m.Metadata().Namespace(),
 		m.Kind(),
 		m.Metadata().Name(),
 	)
 
 	if _, ok := err.(client.ErrorNotFound); ok {
-		rawIs = map[string]interface{}{}
+		res = map[string]interface{}{}
 	} else if err != nil {
 		return nil, errors.Wrap(err, "getting state from cluster")
 	}
 
-	should, err := yaml.Marshal(m)
-	if err != nil {
-		return nil, err
-	}
+	local := m.String()
+	cluster := manifest.Manifest(subset(m, res)).String()
 
-	is, err := yaml.Marshal(subset(m, rawIs))
-	if err != nil {
-		return nil, err
-	}
-	if string(is) == "{}\n" {
-		is = []byte("")
+	if string(cluster) == "{}\n" {
+		cluster = ""
 	}
 
 	return &difference{
-		name:   name,
-		live:   string(is),
-		merged: string(should),
+		name:    name,
+		local:   string(cluster),
+		cluster: string(local),
 	}, nil
 }
 
@@ -117,36 +111,36 @@ func subsetDiff(c client.Client, m manifest.Manifest) (*difference, error) {
 // It makes is a subset of should.
 // Kubernetes returns more keys than we can know about.
 // This means, we need to remove all keys from the kubectl output, that are not present locally.
-func subset(should, is map[string]interface{}) map[string]interface{} {
-	if should["namespace"] != nil {
-		is["namespace"] = should["namespace"]
+func subset(local, cluster map[string]interface{}) map[string]interface{} {
+	if local["namespace"] != nil {
+		cluster["namespace"] = local["namespace"]
 	}
 
 	// just ignore the apiVersion for now, too much bloat
-	if should["apiVersion"] != nil && is["apiVersion"] != nil {
-		is["apiVersion"] = should["apiVersion"]
+	if local["apiVersion"] != nil && cluster["apiVersion"] != nil {
+		cluster["apiVersion"] = local["apiVersion"]
 	}
 
-	for k, v := range is {
-		if should[k] == nil {
-			delete(is, k)
+	for k, v := range cluster {
+		if local[k] == nil {
+			delete(cluster, k)
 			continue
 		}
 
 		switch b := v.(type) {
 		case map[string]interface{}:
-			if a, ok := should[k].(map[string]interface{}); ok {
-				is[k] = subset(a, b)
+			if a, ok := local[k].(map[string]interface{}); ok {
+				cluster[k] = subset(a, b)
 			}
 		case []map[string]interface{}:
 			for i := range b {
-				if a, ok := should[k].([]map[string]interface{}); ok {
+				if a, ok := local[k].([]map[string]interface{}); ok {
 					b[i] = subset(a[i], b[i])
 				}
 			}
 		case []interface{}:
 			for i := range b {
-				if a, ok := should[k].([]interface{}); ok {
+				if a, ok := local[k].([]interface{}); ok {
 					if i >= len(a) {
 						// slice in config shorter than in live. Abort, as there are no entries to diff anymore
 						break
@@ -168,5 +162,5 @@ func subset(should, is map[string]interface{}) map[string]interface{} {
 			}
 		}
 	}
-	return is
+	return cluster
 }
