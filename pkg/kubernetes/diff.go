@@ -23,7 +23,10 @@ Please downgrade kubectl until https://github.com/kubernetes/kubernetes/issues/8
 	// required for separating
 	namespaces, err := k.ctl.Namespaces()
 	if err != nil {
-		return nil, errors.Wrap(err, "listing namespaces")
+		fmt.Println("Error listing namespaces, assuming namespace(s) exists...")
+		namespaces = map[string]bool{
+			k.Env.Spec.Namespace: true,
+		}
 	}
 	resources, err := k.ctl.Resources()
 	if err != nil {
