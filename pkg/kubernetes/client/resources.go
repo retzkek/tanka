@@ -48,9 +48,13 @@ func (k Kubectl) Resources() (Resources, error) {
 	cmd.Stdout = &out
 	cmd.Stderr = os.Stderr
 
-	if err := cmd.Run(); err != nil {
-		return nil, err
-	}
+	//if err := cmd.Run(); err != nil {
+	//	return nil, err
+	//}
+	//
+	// kubectl api-resources may return an error if some resources are
+	// unavailable, but it really shouldn't stop us from deploying
+	cmd.Run()
 
 	var res Resources
 	if err := UnmarshalTable(out.String(), &res); err != nil {
